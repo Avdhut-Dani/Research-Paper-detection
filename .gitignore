@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+uploads/
+researcher_system/data/papers/highlighted_*.pdf
+.DS_Store

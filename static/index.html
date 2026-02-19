@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Researcher System - PDF Analysis</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f4f4f9; color: #333; }
+        h1 { color: #2c3e50; text-align: center; }
+        .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .upload-section { text-align: center; margin-bottom: 30px; border: 2px dashed #ccc; padding: 40px; border-radius: 8px; transition: border-color 0.3s; }
+        .upload-section:hover { border-color: #3498db; }
+        input[type="file"] { display: none; }
+        label { background-color: #3498db; color: white; padding: 10px 20px; border-radius: 5px; cursor: pointer; transition: background 0.3s; }
+        label:hover { background-color: #2980b9; }
+        button { background-color: #2ecc71; color: white; border: none; padding: 10px 25px; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 15px; transition: background 0.3s; }
+        button:hover { background-color: #27ae60; }
+        button:disabled { background-color: #95a5a6; cursor: not-allowed; }
+        #results { margin-top: 30px; display: none; }
+        .metric-card { background: #f8f9fa; border-left: 5px solid #3498db; padding: 15px; margin-bottom: 15px; border-radius: 4px; }
+        .metric-title { font-weight: bold; color: #7f8c8d; font-size: 0.9em; text-transform: uppercase; }
+        .metric-value { font-size: 1.5em; font-weight: bold; color: #2c3e50; }
+        .citations-list { list-style-type: none; padding: 0; }
+        .citations-list li { background: #fff; border-bottom: 1px solid #eee; padding: 10px; }
+        .citations-list li:last-child { border-bottom: none; }
+        .loader { border: 5px solid #f3f3f3; border-top: 5px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        /* Dark mode preference */
+        @media (prefers-color-scheme: dark) {
+            body { background-color: #1a1a1a; color: #f4f4f9; }
+            .container { background-color: #2c2c2c; }
+            .metric-card { background-color: #3d3d3d; }
+            .metric-value { color: #ecf0f1; }
+            .citations-list li { background-color: #2c2c2c; border-bottom: 1px solid #444; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>📄 Research PDF Analyzer</h1>
+    
+    <div class="upload-section" id="drop-zone">
+        <p>Drag & Drop PDF here or</p>
+        <input type="file" id="fileInput" accept=".pdf">
+        <label for="fileInput">Choose File</label>
+        <br><br>
+        <div id="fileName" style="font-style: italic; color: #7f8c8d;"></div>
+        <button id="analyzeBtn" disabled>Analyze Document</button>
+    </div>
+
+    <div class="loader" id="loader"></div>
+
+    <div id="results">
+        <h2>Analysis Results</h2>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+            <div class="metric-card" style="border-left-color: #3498db;">
+                <div class="metric-title">Integrity Score</div>
+                <div class="metric-value" id="integrityScore">-</div>
+            </div>
+            <div class="metric-card" style="border-left-color: #2ecc71;">
+                <div class="metric-title">Claims Found</div>
+                <div class="metric-value" id="claimsCount">-</div>
+            </div>
+            <div class="metric-card" style="border-left-color: #e74c3c;">
+                <div class="metric-title">Vague Claims</div>
+                <div class="metric-value" id="vagueCount">-</div>
+            </div>
+            <div class="metric-card" style="border-left-color: #f1c40f;">
+                <div class="metric-title">Citations Found</div>
+                <div class="metric-value" id="citationsCount">-</div>
+            </div>
+             <div class="metric-card" style="border-left-color: #9b59b6;">
+                <div class="metric-title">Avg Relevance</div>
+                <div class="metric-value" id="avgRelevance">-</div>
+            </div>
+             <div class="metric-card" style="border-left-color: #34495e;">
+                <div class="metric-title">Self-Citation Ratio</div>
+                <div class="metric-value" id="selfCitationRatio">-</div>
+            </div>
+        </div>
+
+        <h3>Found Citations</h3>
+        <ul class="citations-list" id="citationsList">
+            <!-- Citations will be injected here -->
+        </ul>
+    </div>
+</div>
+
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const fileNameDisplay = document.getElementById('fileName');
+    const loader = document.getElementById('loader');
+    const resultsDiv = document.getElementById('results');
+
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            fileNameDisplay.textContent = e.target.files[0].name;
+            analyzeBtn.disabled = false;
+        } else {
+            fileNameDisplay.textContent = '';
+            analyzeBtn.disabled = true;
+        }
+    });
+
+    analyzeBtn.addEventListener('click', async () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+
+        // Reset UI
+        resultsDiv.style.display = 'none';
+        loader.style.display = 'block';
+        analyzeBtn.disabled = true;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const response = await fetch('/analyze', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || error.error || 'Analysis failed');
+            }
+
+            const data = await response.json();
+            displayResults(data);
+
+        } catch (error) {
+            alert('Error: ' + error.message);
+        } finally {
+            loader.style.display = 'none';
+            analyzeBtn.disabled = false;
+        }
+    });
+
+    function displayResults(data) {
+        document.getElementById('integrityScore').textContent = data.integrity_score.toFixed(2);
+        document.getElementById('claimsCount').textContent = data.claims;
+        document.getElementById('vagueCount').textContent = data.vague_claims;
+        document.getElementById('citationsCount').textContent = data.citations;
+        document.getElementById('avgRelevance').textContent = data.avg_relevance.toFixed(4);
+        document.getElementById('selfCitationRatio').textContent = (data.self_citation_ratio * 100).toFixed(1) + '%'; 
+
+        // Display Download Button if available
+        const resultsHeader = document.querySelector('#results h2');
+        const existingBtn = document.getElementById('downloadBtn');
+        if (existingBtn) existingBtn.remove();
+        
+        if (data.highlighted_pdf_url) {
+            const btn = document.createElement('a');
+            btn.id = 'downloadBtn';
+            btn.href = data.highlighted_pdf_url;
+            btn.textContent = '⬇ Download Highlighted PDF';
+            btn.className = 'download-btn';
+            btn.style.cssText = 'display: inline-block; background: #9b59b6; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; margin-left: 20px; font-size: 0.8em; vertical-align: middle;';
+            btn.download = 'highlighted_paper.pdf';
+            resultsHeader.appendChild(btn);
+        }
+
+        // Display Citations
+        const list = document.getElementById('citationsList');
+        list.innerHTML = '';
+        
+        if (data.citation_list && data.citation_list.length > 0) {
+            data.citation_list.forEach(cit => {
+                const li = document.createElement('li');
+                li.textContent = cit;
+                list.appendChild(li);
+            });
+        } else {
+            const li = document.createElement('li');
+            li.textContent = 'No citations found.';
+            li.style.color = '#7f8c8d';
+            list.appendChild(li);
+        }
+
+        // Display Claims
+        const claimsContainer = document.createElement('div');
+        claimsContainer.id = 'claimsContainer';
+        claimsContainer.innerHTML = '<h3>Identified Claims</h3><ul class="citations-list" id="claimsList"></ul>';
+        
+        const existingClaims = document.getElementById('claimsContainer');
+        if (existingClaims) existingClaims.remove();
+        
+        document.getElementById('results').appendChild(claimsContainer);
+        
+        const claimsList = document.getElementById('claimsList');
+        if (data.claims_list && data.claims_list.length > 0) {
+            data.claims_list.forEach(claim => {
+                const li = document.createElement('li');
+                li.textContent = claim;
+                // Add a small highlight indicator
+                li.style.borderLeft = "3px solid #f1c40f";
+                claimsList.appendChild(li);
+            });
+        } else {
+             const li = document.createElement('li');
+            li.textContent = 'No specific claims extracted.';
+            li.style.color = '#7f8c8d';
+            claimsList.appendChild(li);
+        }
+
+        resultsDiv.style.display = 'block';
+    }
+</script>
+
+</body>
+</html>

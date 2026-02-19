@@ -1,0 +1,11 @@
+torch
+sentence-transformers
+transformers
+spacy
+PyPDF2
+networkx
+requests
+fastapi
+uvicorn
+python-multipart
+pymupdf
