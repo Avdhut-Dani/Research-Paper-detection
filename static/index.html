@@ -183,7 +183,7 @@
         // Display Claims
         const claimsContainer = document.createElement('div');
         claimsContainer.id = 'claimsContainer';
-        claimsContainer.innerHTML = '<h3>Identified Claims</h3><ul class="citations-list" id="claimsList"></ul>';
+        claimsContainer.innerHTML = '<h3>Research Findings & Claims</h3><div id="claimsList"></div>';
         
         const existingClaims = document.getElementById('claimsContainer');
         if (existingClaims) existingClaims.remove();
@@ -191,16 +191,47 @@
         document.getElementById('results').appendChild(claimsContainer);
         
         const claimsList = document.getElementById('claimsList');
-        if (data.claims_list && data.claims_list.length > 0) {
-            data.claims_list.forEach(claim => {
-                const li = document.createElement('li');
-                li.textContent = claim;
-                // Add a small highlight indicator
-                li.style.borderLeft = "3px solid #f1c40f";
-                claimsList.appendChild(li);
+        const allClaims = [...data.solid_claims, ...data.vague_claims_list];
+        
+        if (allClaims.length > 0) {
+            allClaims.forEach(claim => {
+                const card = document.createElement('div');
+                card.className = 'metric-card';
+                card.style.borderLeft = claim.is_outdated ? "5px solid #e74c3c" : "5px solid #2ecc71";
+                card.style.padding = "15px";
+                card.style.marginBottom = "10px";
+                
+                const decayColors = { FAST: "#e74c3c", MEDIUM: "#f39c12", SLOW: "#3498db", TIMELESS: "#9b59b6" };
+                const decayColor = decayColors[claim.decay_type] || "#7f8c8d";
+                
+                const variablesHtml = claim.moving_variables && claim.moving_variables.length > 0 
+                    ? `<div style="font-size: 0.8em; color: #e67e22; margin-top: 5px;">⚠️ Moving Variables: ${claim.moving_variables.join(', ')}</div>` 
+                    : '';
+
+                card.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                        <span style="font-weight: 500;">${claim.text}</span>
+                        <span style="background: ${decayColor}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7em; white-space: nowrap; margin-left:10px;">
+                            ${claim.decay_type}
+                        </span>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 0.85em; display: flex; gap: 15px; color: #7f8c8d;">
+                        <span>Freshness: <strong>${claim.freshness_score}%</strong></span>
+                        <span>Half-life: <strong>${claim.half_life}y</strong></span>
+                    </div>
+                    ${variablesHtml}
+                    <div style="margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.03); border-radius: 4px; font-size: 0.8em;">
+                        <div style="margin-bottom: 4px;"><strong>🛡 Stress Test:</strong> ${claim.stress_test}</div>
+                        <div><strong>🤝 Consensus:</strong> ${claim.consensus}</div>
+                    </div>
+                    <div style="font-size: 0.75em; color: #95a5a6; margin-top: 8px; font-style: italic;">
+                        Analysis: ${claim.reason}
+                    </div>
+                `;
+                claimsList.appendChild(card);
             });
         } else {
-             const li = document.createElement('li');
+            const li = document.createElement('div');
             li.textContent = 'No specific claims extracted.';
             li.style.color = '#7f8c8d';
             claimsList.appendChild(li);

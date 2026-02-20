@@ -37,13 +37,16 @@ def run_pipeline(path):
     for c in raw_claims:
         sentence = c['sentence']
         label = c['label']
+        score_val = c['score']
         
+        # Stricter thresholds for noise reduction
+        if score_val < 0.4:
+            continue
+            
         # RAG-base Verification logic
-        # If the claim mentions a citation, we verify relevance
         verified = True
         verification_note = "No specific citation linked in sentence."
         
-        # Simple RAG: find [X] in sentence and compare with bib_map[X]
         import re
         mentions = re.findall(r"\[(\d+)\]", sentence)
         if mentions:
@@ -60,14 +63,20 @@ def run_pipeline(path):
 
         claim_data = {
             "text": sentence,
-            "score": c['score'],
+            "score": score_val,
             "verified": verified,
             "verification_note": verification_note
         }
 
-        if label == "solid_claim":
+        # Final classification refinement
+        # If it has vague words, it's a vague claim regardless of LLM label peak
+        if is_vague(sentence) or score_val < 0.65:
+            vague_claims.append(claim_data)
+        elif label == "solid_claim":
             solid_claims.append(claim_data)
         else:
+            # If LLM said "vague_claim" but we didn't hit vague words and score is high (>=0.65)?
+            # Keep as vague to be safe unless it's a very solid finding.
             vague_claims.append(claim_data)
 
     # Calculate overall metrics
@@ -77,7 +86,6 @@ def run_pipeline(path):
              all_rel_scores.append(relevance(sc['text'], citation_mentions[0]))
     
     avg_rel = sum(all_rel_scores) / len(all_rel_scores) if all_rel_scores else 0
-    # --- Outdated Content Logic ---
     # 1. Extract years from bibliography
     bib_years = {}
     import re
@@ -85,31 +93,64 @@ def run_pipeline(path):
         year_match = re.search(r'\b(19|20)\d{2}\b', text)
         if year_match:
             bib_years[ref_id] = int(year_match.group(0))
+
+    from researcher_system.models.llm_classifier import get_decay_analysis
+    current_year = 2026
     
-    threshold_year = 2015
-    
-    def check_outdated(claim_text):
+    def check_freshness(claim_text):
+        decay_type, reason, moving_vars, stress_test, consensus = get_decay_analysis(claim_text)
         mentions = extract_citations(claim_text)
         cited_years = [bib_years[m] for m in mentions if m in bib_years]
-        # A claim is outdated if ALL its citations are older than the threshold
-        if cited_years and all(y < threshold_year for y in cited_years):
-            return True, cited_years
-        return False, cited_years
+        
+        # Determine threshold based on architecture (half-lives)
+        threshold_map = {
+            "FAST": 1.5,
+            "MEDIUM": 4.0,
+            "SLOW": 15.0,
+            "TIMELESS": 100.0
+        }
+        half_life = float(threshold_map.get(decay_type, 5.0))
+        
+        is_fresh = True
+        freshness_score = 100.0
+        
+        if cited_years:
+            avg_year = float(sum(cited_years)) / len(cited_years)
+            age = float(current_year - avg_year)
+            
+            # Accelerate decay if moving variables are present
+            decay_accelerator = 1.0 + (0.2 * len(moving_vars))
+            
+            # Freshness score decays as age approaches/exceeds half-life
+            freshness_score = max(0.0, min(100.0, 100.0 * (1.0 - (age / (half_life * 2.5 * (1/decay_accelerator))))))
+            
+            if age > (half_life / decay_accelerator):
+                is_fresh = False
+        
+        return {
+            "is_outdated": not is_fresh,
+            "decay_type": decay_type,
+            "reason": reason,
+            "moving_variables": moving_vars,
+            "stress_test": stress_test,
+            "consensus": consensus,
+            "freshness_score": round(float(freshness_score), 1),
+            "cited_years": cited_years,
+            "half_life": half_life
+        }
 
     # Process Solid Claims
     refined_solid = []
     for sc in solid_claims:
-        is_outdated, years = check_outdated(sc['text'])
-        sc['is_outdated'] = is_outdated
-        sc['cited_years'] = years
+        fresh_data = check_freshness(sc['text'])
+        sc.update(fresh_data)
         refined_solid.append(sc)
 
     # Process Vague Claims
     refined_vague = []
     for vc in vague_claims:
-        is_outdated, years = check_outdated(vc['text'])
-        vc['is_outdated'] = is_outdated
-        vc['cited_years'] = years
+        fresh_data = check_freshness(vc['text'])
+        vc.update(fresh_data)
         refined_vague.append(vc)
 
     self_ratio = self_citation_ratio(citation_mentions)

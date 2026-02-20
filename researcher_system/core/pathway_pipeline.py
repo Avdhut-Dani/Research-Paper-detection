@@ -11,12 +11,23 @@ def _is_claim_label(label: str) -> bool:
     return label in ["solid_claim", "vague_claim"]
 
 def is_claim_like(sentence: str) -> bool:
-    """Heuristic to reduce LLM load."""
-    keywords = ["we", "propose", "method", "achieve", "result", "show", "finding", "conclude", "demonstrate", "our"]
-    s = sentence.lower()
-    # Check if any keyword matches
-    if any(k in s for k in keywords):
+    """Heuristic to reduce LLM load by filtering out noise."""
+    lower_s = sentence.lower().strip()
+    
+    # Negative filters: common research paper filler/structure
+    skip_keywords = ["figure", "table", "section", "chapter", "below", "following", "above", "et al.", "i.e.", "e.g."]
+    if any(k in lower_s for k in skip_keywords) and len(lower_s) < 100:
+        return False
+        
+    # Positive filters: Indicators of a research claim
+    claim_indicators = ["propose", "method", "achieve", "result", "finding", "conclude", "demonstrate", "evidence", "significant", "superior", "improve"]
+    if any(k in lower_s for k in claim_indicators):
         return True
+        
+    # Basic structural check: Must have "we" or "our" or be a descriptive sentence
+    if "we " in lower_s or "our " in lower_s:
+        return True
+        
     return False
 
 def run_pathway_analysis(text):
