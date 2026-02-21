@@ -45,19 +45,26 @@
         <input type="file" id="fileInput" accept=".pdf">
         <label for="fileInput">Choose File</label>
         <br><br>
-        <div id="fileName" style="font-style: italic; color: #7f8c8d;"></div>
-        <button id="analyzeBtn" disabled>Analyze Document</button>
+        <div id="fileName" style="font-style: italic; color: #7f8c8d; margin-bottom: 15px;"></div>
+        
+        <div>
+            <label for="doiInput" style="background: none; color: #333; cursor: default; padding: 0;">Optional DOI (for Published Papers):</label><br>
+            <input type="text" id="doiInput" placeholder="e.g. 10.1145/1234567.890" style="padding: 10px; border-radius: 4px; border: 1px solid #ccc; width: 80%; max-width: 300px; margin-top: 5px;">
+        </div>
+        
+        <button id="analyzeBtn">Analyze Document</button>
     </div>
 
     <div class="loader" id="loader"></div>
 
     <div id="results">
-        <h2>Analysis Results</h2>
+        <h2>Analysis Results <span id="analysisModeBadge" style="font-size: 0.5em; background: #3498db; color: white; padding: 5px 10px; border-radius: 20px; vertical-align: middle; margin-left: 10px; font-weight: normal;">Mode: Unknown</span></h2>
         
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
             <div class="metric-card" style="border-left-color: #3498db;">
                 <div class="metric-title">Integrity Score</div>
                 <div class="metric-value" id="integrityScore">-</div>
+                <div id="integrityBreakdown" style="display:none; font-size: 0.6em; margin-top: 10px; color: #7f8c8d; text-align: left; line-height: 1.2;"></div>
             </div>
             <div class="metric-card" style="border-left-color: #2ecc71;">
                 <div class="metric-title">Claims Found</div>
@@ -68,8 +75,9 @@
                 <div class="metric-value" id="vagueCount">-</div>
             </div>
             <div class="metric-card" style="border-left-color: #f1c40f;">
-                <div class="metric-title">Citations Found</div>
+                <div class="metric-title">References Found</div>
                 <div class="metric-value" id="citationsCount">-</div>
+                <div id="apiPill" style="display:none; margin-top: 5px; font-size: 0.6em; background: #9b59b6; color: white; padding: 2px 6px; border-radius: 10px; text-align: center; width: fit-content;"></div>
             </div>
              <div class="metric-card" style="border-left-color: #9b59b6;">
                 <div class="metric-title">Avg Relevance</div>
@@ -98,10 +106,14 @@
             <ul class="citations-list" id="falseCitationsList"></ul>
         </div>
 
-        <h3>Found Citations</h3>
-        <ul class="citations-list" id="citationsList">
-            <!-- Citations will be injected here -->
-        </ul>
+        <div id="foundCitationsContainer" style="margin-top: 30px;">
+            <h3>Found Citations</h3>
+            <ul class="citations-list" id="citationsList">
+                <!-- Citations will be injected here -->
+            </ul>
+        </div>
+        
+        <div id="apiMetadataContainer" style="margin-top: 30px; display: none;"></div>
     </div>
 </div>
 
@@ -124,7 +136,12 @@
 
     analyzeBtn.addEventListener('click', async () => {
         const file = fileInput.files[0];
-        if (!file) return;
+        const doi = document.getElementById('doiInput').value.trim();
+        
+        if (!file && !doi) {
+            alert('Please upload a PDF or provide a DOI.');
+            return;
+        }
 
         // Reset UI
         resultsDiv.style.display = 'none';
@@ -132,7 +149,8 @@
         analyzeBtn.disabled = true;
 
         const formData = new FormData();
-        formData.append('file', file);
+        if (file) formData.append('file', file);
+        if (doi) formData.append('doi', doi);
 
         try {
             const response = await fetch('/analyze', {
@@ -157,11 +175,140 @@
     });
 
     function displayResults(data) {
-        document.getElementById('integrityScore').textContent = data.integrity_score.toFixed(2);
-        const totalClaims = (data.claims || 0) + (data.vague_claims || 0);
-        document.getElementById('claimsCount').textContent = totalClaims;
-        document.getElementById('vagueCount').textContent = data.vague_claims;
-        document.getElementById('citationsCount').textContent = data.citations;
+        // Set Mode Badge
+        const badge = document.getElementById('analysisModeBadge');
+        if (data.analysis_mode === "MATCHED_HYBRID") {
+            badge.textContent = "Mode: Full Analysis (Matched)";
+            badge.style.background = "#2ecc71";
+        } else if (data.analysis_mode === "MATCHED_HYBRID_WARN") {
+            badge.textContent = "Mode: API Metadata-Only (Title Mismatch: PDF Ignored)";
+            badge.style.background = "#e67e22";
+        } else if (data.analysis_mode === "PDF_ONLY") {
+            badge.textContent = "Mode: PDF-Only (Heuristics)";
+            badge.style.background = "#f39c12";
+        } else if (data.analysis_mode === "DOI_ONLY") {
+            badge.textContent = "Mode: API Metadata-Only";
+            badge.style.background = "#9b59b6";
+        } else {
+            badge.textContent = "Mode: Unknown";
+            badge.style.background = "#7f8c8d";
+        }
+    
+        // Optional display toggling based on mode
+        const isDoiOnly = data.analysis_mode === "DOI_ONLY" || data.analysis_mode === "MATCHED_HYBRID_WARN";
+        
+        if (data.integrity_score !== undefined && data.integrity_score !== null) {
+            document.getElementById('integrityScore').textContent = data.integrity_score.toFixed(2);
+            
+            // Transparency Breakdown
+            const breakdown = data.integrity_breakdown || {};
+            const breakdownDiv = document.getElementById('integrityBreakdown');
+            breakdownDiv.style.display = 'block';
+            
+            let breakdownHtml = '<div style="border-top: 1px solid #eee; padding-top: 5px; margin-top: 5px;"><strong>Breakdown:</strong><br>';
+            if (breakdown.self_citation > 0) breakdownHtml += `• Self-Cit: -${breakdown.self_citation}<br>`;
+            if (breakdown.vague_claims > 0) breakdownHtml += `• Vague: -${breakdown.vague_claims}<br>`;
+            if (breakdown.false_citations > 0) breakdownHtml += `• False Cit: -${breakdown.false_citations}<br>`;
+            if (breakdown.outdated_datasets > 0) breakdownHtml += `• Outdated: -${breakdown.outdated_datasets}<br>`;
+            if (breakdown.low_relevance > 0) breakdownHtml += `• Low Rel: -${breakdown.low_relevance}<br>`;
+            if (breakdown.freshness_bonus > 0) breakdownHtml += `• Fresh Bonus: +${breakdown.freshness_bonus}`;
+            breakdownHtml += '</div>';
+            breakdownDiv.innerHTML = breakdownHtml;
+        } else {
+            document.getElementById('integrityScore').textContent = "N/A";
+            document.getElementById('integrityBreakdown').style.display = 'none';
+        }
+        
+        if (isDoiOnly) {
+            document.getElementById('claimsCount').textContent = "N/A";
+            document.getElementById('vagueCount').textContent = "N/A";
+            document.getElementById('avgRelevance').textContent = "N/A";
+            
+            // Hide PDF-dependent containers
+            document.getElementById('datasetAnalysis').style.display = 'none';
+            document.getElementById('falseCitationsContainer').style.display = 'none';
+            document.getElementById('foundCitationsContainer').style.display = 'none';
+            
+            // Show API Metadata
+            if (data.paper_metadata) {
+                const apiContainer = document.getElementById('apiMetadataContainer');
+                apiContainer.style.display = 'block';
+                
+                const pm = data.paper_metadata;
+                const authors = pm.authors ? pm.authors.map(a => a.display_name).filter(Boolean).join(', ') : 'Unknown';
+                const abstractUrl = pm.id ? `<a href="${pm.id}" target="_blank">View on OpenAlex ↗</a>` : '';
+                
+                apiContainer.innerHTML = `
+                    <h3>API Metadata (OpenAlex)</h3>
+                    <div style="background: #f8f9fa; border-left: 5px solid #9b59b6; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                        <h4 style="margin: 0 0 10px 0; color: #2c3e50;">${pm.title || 'Untitled'}</h4>
+                        <div style="font-size: 0.9em; color: #34495e; margin-bottom: 10px;">
+                            <strong>Authors:</strong> ${authors}<br>
+                            <strong>Publication Year:</strong> ${pm.publication_year || 'Unknown'}<br>
+                            <strong>Type:</strong> ${pm.type || 'Unknown'} | <strong>Open Access:</strong> ${pm.is_oa ? 'Yes' : 'No'}
+                        </div>
+                        <div style="margin-top: 10px; font-size: 0.8em;">${abstractUrl}</div>
+                    </div>
+                `;
+            } else {
+                document.getElementById('apiMetadataContainer').style.display = 'none';
+            }
+        } else {
+            // Ensure PDF containers are visible for Hybrid/PDF
+            document.getElementById('datasetAnalysis').style.display = 'block';
+            document.getElementById('falseCitationsContainer').style.display = 'block';
+            document.getElementById('foundCitationsContainer').style.display = 'block';
+            
+            // For MATCHED_HYBRID, also show the API Metadata container
+            if (data.analysis_mode === "MATCHED_HYBRID" && data.paper_metadata) {
+                const apiContainer = document.getElementById('apiMetadataContainer');
+                apiContainer.style.display = 'block';
+                const pm = data.paper_metadata;
+                const authors = pm.authors ? pm.authors.map(a => a.display_name).filter(Boolean).join(', ') : 'Unknown';
+                const abstractUrl = pm.id ? `<a href="${pm.id}" target="_blank">View on OpenAlex ↗</a>` : '';
+                
+                apiContainer.innerHTML = `
+                    <h3>Paper Verified via OpenAlex API</h3>
+                    <div style="background: #f8f9fa; border-left: 5px solid #2ecc71; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                        <h4 style="margin: 0 0 10px 0; color: #2c3e50;">${pm.title || 'Untitled'}</h4>
+                        <div style="font-size: 0.9em; color: #34495e; margin-bottom: 10px;">
+                            <strong>Authors:</strong> ${authors}<br>
+                            <strong>Publication Year:</strong> ${pm.publication_year || 'Unknown'}<br>
+                        </div>
+                        <div style="margin-top: 10px; font-size: 0.8em;">${abstractUrl}</div>
+                    </div>
+                `;
+            } else {
+                document.getElementById('apiMetadataContainer').style.display = 'none';
+            }
+            
+            const totalClaims = (data.claims || 0) + (data.vague_claims || 0);
+            document.getElementById('claimsCount').textContent = totalClaims;
+            document.getElementById('vagueCount').textContent = data.vague_claims;
+            
+            let avgRel = data.avg_relevance;
+            if (avgRel !== undefined && avgRel !== null) {
+                avgRel = Math.max(0, avgRel); // clamp negative to 0
+                document.getElementById('avgRelevance').textContent = avgRel.toFixed(4);
+            } else {
+                document.getElementById('avgRelevance').textContent = 'N/A';
+            }
+        }
+        
+        document.getElementById('citationsCount').textContent = data.total_citations_count || data.citations || '0';
+        
+        const apiPill = document.getElementById('apiPill');
+        if (data.cited_by_count !== undefined && data.cited_by_count !== null) {
+            apiPill.style.display = 'block';
+            
+            let pillHtml = `<div>API Cited by: ${data.cited_by_count}</div>`;
+            if (data.api_references_count !== undefined && data.api_references_count !== null) {
+                pillHtml += `<div style="margin-top:2px;">API References: ${data.api_references_count}</div>`;
+            }
+            apiPill.innerHTML = pillHtml;
+        } else {
+            apiPill.style.display = 'none';
+        }
         
         // Handle negative relevance - clamp to 0 or display N/A if missing
         let avgRel = data.avg_relevance;
@@ -252,13 +399,14 @@
                 cmpDiv.style.backgroundColor = "#e8f4f8";
                 cmpDiv.style.borderRadius = "5px";
                 cmpDiv.style.borderLeft = "5px solid #3498db";
+                cmpDiv.style.color = "#333";
                 
                 cmpDiv.innerHTML = `
                     <h4 style="margin-top:0; color:#2c3e50;">📊 Market Comparison: ${cmp.domain}</h4>
                     <p style="font-size: 0.9em; color:#34495e; margin-bottom: 10px;">${cmp.analysis}</p>
-                    <div style="font-size: 0.85em;">
+                    <div style="font-size: 0.85em; color: #333;">
                         <strong>Latest Available Benchmarks:</strong> ${cmp.latest_available.join(', ')}<br/>
-                        ${cmp.missed && cmp.missed.length > 0 ? `<strong style="color: #e74c3c;">Missed Opportunities:</strong> ${cmp.missed.join(', ')}` : `<strong style="color: #2ecc71;">✓ Author used top alternatives.</strong>`}
+                        ${cmp.missed && cmp.missed.length > 0 ? `<strong style="color: #e74c3c;">Missed Opportunities:</strong> <span style="color: #333;">${cmp.missed.join(', ')}</span>` : `<strong style="color: #2ecc71;">✓ Author used top alternatives.</strong>`}
                     </div>
                 `;
                 datasetAnalysis.appendChild(cmpDiv);
@@ -298,18 +446,20 @@
             falseList.appendChild(li);
         }
 
-        // Display Claims
-        const claimsContainer = document.createElement('div');
-        claimsContainer.id = 'claimsContainer';
-        claimsContainer.innerHTML = '<h3>Research Findings & Claims</h3><div id="claimsList"></div>';
         
+        // Hide existing claims container (prevent duplication)
         const existingClaims = document.getElementById('claimsContainer');
         if (existingClaims) existingClaims.remove();
         
-        document.getElementById('results').appendChild(claimsContainer);
-        
-        const claimsList = document.getElementById('claimsList');
-        const allClaims = [...data.solid_claims, ...data.vague_claims_list];
+        if (!isDoiOnly) {
+            const claimsContainer = document.createElement('div');
+            claimsContainer.id = 'claimsContainer';
+            claimsContainer.style.marginTop = '30px';
+            claimsContainer.innerHTML = '<h3>Research Findings & Claims</h3><div id="claimsList"></div>';
+            document.getElementById('results').appendChild(claimsContainer);
+            
+            const claimsList = document.getElementById('claimsList');
+            const allClaims = [...(data.solid_claims || []), ...(data.vague_claims_list || [])];
         
         if (allClaims.length > 0) {
             allClaims.forEach(claim => {
@@ -348,11 +498,12 @@
                 `;
                 claimsList.appendChild(card);
             });
-        } else {
-            const li = document.createElement('div');
-            li.textContent = 'No specific claims extracted.';
-            li.style.color = '#7f8c8d';
-            claimsList.appendChild(li);
+            } else {
+                const li = document.createElement('div');
+                li.textContent = 'No specific claims extracted.';
+                li.style.color = '#7f8c8d';
+                claimsList.appendChild(li);
+            }
         }
 
         resultsDiv.style.display = 'block';

@@ -7,7 +7,7 @@ from researcher_system.models.vague_detector import is_vague
 from researcher_system.models.vague_detector import is_vague
 from researcher_system.analysis.self_citation_analysis import compute_self_citations, fallback_self_citation_ratio
 from researcher_system.analysis.integrity_scoring import score
-from researcher_system.api.openalex_client import fetch_paper_by_title, fetch_abstracts_for_works
+from researcher_system.api.openalex_client import fetch_paper_by_title, fetch_paper_by_doi, fetch_abstracts_for_works
 from researcher_system.analysis.false_citation_detector import detect_false_citations
 from researcher_system.analysis.dataset_analyzer import extract_datasets_from_text, analyze_dataset_usage
 
@@ -19,24 +19,91 @@ def extract_title_heuristic(text):
             return line
     return "Unknown Title"
 
-def run_pipeline(path):
-    # 1. Extract raw text with body/references split
-    parsed_content = extract_text(path)
-    body_text = parsed_content["body"]
-    ref_text = parsed_content["references"]
+def fuzzy_match_titles(t1, t2):
+    if not t1 or not t2: return False
+    # Very basic inclusion match for safety
+    import re
+    t1_clean = re.sub(r'[^a-zA-Z0-9]', '', t1.lower())
+    t2_clean = re.sub(r'[^a-zA-Z0-9]', '', t2.lower())
+    return t1_clean in t2_clean or t2_clean in t1_clean
 
-    # 2. Extract bibliography entries [id] -> full_text from the references section
-    bib_map = parse_bibliography(ref_text if ref_text else body_text)
-
-    # 3. Run Pathway/LLM analysis on the BODY only
-    raw_claims = run_pathway_analysis(body_text)
+def run_pipeline(path=None, doi=None, filename=None):
+    analysis_mode = "UNKNOWN"
+    paper_metadata = None
+    body_text = ""
+    ref_text = ""
+    bib_map = {}
+    citation_mentions = []
     
-    # 4. Extract citation mentions from the body
-    citation_mentions = extract_citations(body_text)
+    # CASE 3: DOI ONLY
+    if doi and not path:
+        analysis_mode = "DOI_ONLY"
+        paper_metadata = fetch_paper_by_doi(doi)
+        
+    # CASE 1 & 2: PDF PROVIDED
+    elif path:
+        parsed_content = extract_text(path)
+        body_text = parsed_content["body"]
+        ref_text = parsed_content["references"]
+        bib_map = parse_bibliography(ref_text if ref_text else body_text)
+        citation_mentions = extract_citations(body_text)
+        
+        # User requested: Use the uploaded filename as the intended paper title (stripping extension)
+        if filename:
+            import os
+            pdf_title = os.path.splitext(filename)[0].replace("_", " ")
+        else:
+            pdf_title = extract_title_heuristic(body_text)
+        
+        if doi:
+            # CASE 1: BOTH PROVIDED
+            # Trust the user's DOI if it resolves. Title heuristic is unreliable
+            # (published PDFs often start with journal name/headers, not the title).
+            temp_metadata = fetch_paper_by_doi(doi)
+            if temp_metadata:
+                if fuzzy_match_titles(pdf_title, temp_metadata.get("title", "")):
+                    analysis_mode = "MATCHED_HYBRID"
+                else:
+                    analysis_mode = "MATCHED_HYBRID_WARN"  # titles differ, but user provided DOI
+                    # Title mismatch: user requested to prioritize DOI and ignore PDF parsing. 
+                    body_text = ""
+                    ref_text = ""
+                    bib_map = {}
+                    citation_mentions = []
+                paper_metadata = temp_metadata
+            else:
+                # DOI resolved to nothing → fall back to PDF only
+                analysis_mode = "PDF_ONLY"
+                paper_metadata = None
+        else:
+            # CASE 2: PDF ONLY
+            analysis_mode = "PDF_ONLY"
+            paper_metadata = None
+            
+    # IF DOI ONLY but invalid DOI
+    if analysis_mode == "DOI_ONLY" and not paper_metadata:
+        return {"error": "Could not find metadata for provided DOI."}
 
+    # Initialize default values
+    avg_rel = 0.0
+    self_ratio = 0.0
+    self_cit_data = {"self_citation_count": 0, "total_references": 0}
+    false_citations = []
+    refined_solid = []
+    refined_vague = []
+    display_citations = []
+    detailed_citations = []
+    dataset_names = []
+    outdated_datasets = []
+    dataset_analysis = {}
+
+    # 3. Run Pathway/LLM analysis on the BODY only (If PDF is available and titles match)
+    raw_claims = []
+    if analysis_mode in ["MATCHED_HYBRID", "PDF_ONLY"]:
+        raw_claims = run_pathway_analysis(body_text)
+    
     solid_claims = []
     vague_claims = []
-    detailed_citations = []
 
     # Map each mention to its bibliography entry
     for cit in citation_mentions:
@@ -174,9 +241,8 @@ def run_pipeline(path):
 
     # --- NEW: Advanced Metrics Integration ---
     # 1. OpenAlex & Self-Citations
-    title_guess = extract_title_heuristic(body_text)
-    paper_metadata = fetch_paper_by_title(title_guess)
     
+    # We already have paper_metadata if MATCHED_HYBRID or DOI_ONLY
     if paper_metadata:
         target_author_ids = [a['id'] for a in paper_metadata.get('authors', [])]
         referenced_work_ids = paper_metadata.get('referenced_works_ids', [])
@@ -184,47 +250,100 @@ def run_pipeline(path):
         self_cit_data = compute_self_citations(target_author_ids, referenced_work_ids)
         self_ratio = self_cit_data.get('self_citation_ratio', 0.0)
         
-        # 2. False Citation Detection
-        from researcher_system.nlp.citation_extractor import extract_citation_contexts
-        citation_contexts = extract_citation_contexts(body_text)
-        cited_abstracts_map = fetch_abstracts_for_works(referenced_work_ids)
+        # 2. False Citation Detection (Only if we have matched PDF text to compare)
+        if analysis_mode in ["MATCHED_HYBRID"]:
+            from researcher_system.nlp.citation_extractor import extract_citation_contexts
+            citation_contexts = extract_citation_contexts(body_text)
+            cited_abstracts_map = fetch_abstracts_for_works(referenced_work_ids)
+            
+            mapped_abstracts = {}
+            for i, cit_marker in enumerate(bib_map.keys()):
+                if i < len(referenced_work_ids):
+                    work_id = referenced_work_ids[i]
+                    mapped_abstracts[cit_marker] = cited_abstracts_map.get(work_id, "")
+                    
+            false_citations = detect_false_citations(citation_contexts, mapped_abstracts)
+    elif analysis_mode == "PDF_ONLY":
+        # PDF_ONLY Case Heuristics
+        self_ratio, self_count = fallback_self_citation_ratio(bib_map, body_text)
+        self_cit_data = {"self_citation_count": self_count, "total_references": len(citation_mentions)}
         
-        # We need a mapped version where the dict key is the citation text, e.g. "[1]"
-        # Since we can't easily map "[1]" to an OpenAlex ID without DOI matching in the bib map,
-        # we'll approximate: we pass the retrieved abstracts and compare contexts anyway.
-        # This is simplified due to citation marker vs DOI mapping complexity.
-        # Let's map any abstract to any citation for testing, or rely on text matching.
-        # Actually, detect_false_citations expects a mapping { marker: abstract }.
-        # We will use the first N abstracts for the first N bibliography items.
-        
-        mapped_abstracts = {}
-        for i, cit_marker in enumerate(bib_map.keys()):
-            if i < len(referenced_work_ids):
-                work_id = referenced_work_ids[i]
-                mapped_abstracts[cit_marker] = cited_abstracts_map.get(work_id, "")
-                
-        false_citations = detect_false_citations(citation_contexts, mapped_abstracts)
-    else:
-        self_ratio = fallback_self_citation_ratio(citation_mentions)
-        false_citations = []
-        self_cit_data = {"self_citation_count": 0, "total_references": len(citation_mentions)}
+        # Heuristic False Citation: Correlate claim immediately against reference string
+        if citation_mentions:
+            from researcher_system.nlp.citation_extractor import extract_citation_contexts
+            citation_contexts = extract_citation_contexts(body_text)
+            # Map citation to raw bibliography text instead of abstract
+            false_citations = detect_false_citations(citation_contexts, bib_map)
 
-    # 3. Dataset Outdated Analysis
-    dataset_names = extract_datasets_from_text(body_text)
-    dataset_analysis = analyze_dataset_usage(dataset_names, current_year=current_year)
-    outdated_datasets = dataset_analysis.get('outdated_warnings', [])
+    # 3. Dataset Outdated Analysis (Requires PDF Text)
+    if analysis_mode in ["MATCHED_HYBRID", "PDF_ONLY"]:
+        dataset_names = extract_datasets_from_text(body_text)
+        dataset_analysis = analyze_dataset_usage(dataset_names, current_year=current_year)
+        outdated_datasets = dataset_analysis.get('outdated_warnings', [])
     
-    # Calculate integrity score with new metrics
-    integrity = score(avg_rel, self_ratio, len(refined_vague))
-    # Deduct points for false citations and outdated datasets
-    integrity -= len(false_citations) * 5
-    integrity -= len(outdated_datasets) * 5
-    integrity = max(0, min(100, integrity))
+    # Calculate robust integrity score dynamically based on available analysis mode data
+    integrity_breakdown = {}
+    if analysis_mode in ["DOI_ONLY", "MATCHED_HYBRID_WARN"]:
+        # Without full PDF text, we cannot genuinely assess paper integrity
+        integrity = None
+    else:
+        # Base score 100
+        integrity = 100.0
+        
+        # 1. Self-citation penalty (Heavy: up to 30 points)
+        self_cit_penalty = min(30.0, self_ratio * 30.0)
+        integrity -= self_cit_penalty
+        integrity_breakdown["self_citation"] = round(self_cit_penalty, 2)
+        
+        # 2. Vague claims penalty (Proportional: up to 25 points)
+        # Instead of fixed per-claim, we look at the ratio of vague vs solid
+        total_claims_found = len(refined_solid) + len(refined_vague)
+        if total_claims_found > 0:
+            vague_ratio = len(refined_vague) / total_claims_found
+            vague_penalty = min(25.0, vague_ratio * 35.0) # Up to 35 points penalty for 100% vague
+        else:
+            vague_penalty = 0.0
+        integrity -= vague_penalty
+        integrity_breakdown["vague_claims"] = round(vague_penalty, 2)
+        
+        # 3. False citation penalty (Critical: 15 points per false citation, cap at 45)
+        false_cit_penalty = min(45.0, len(false_citations) * 15.0)
+        integrity -= false_cit_penalty
+        integrity_breakdown["false_citations"] = round(false_cit_penalty, 2)
+        
+        # 4. Outdated dataset penalty (5 points per outdated dataset, cap at 15)
+        outdated_penalty = min(15.0, len(outdated_datasets) * 5.0)
+        integrity -= outdated_penalty
+        integrity_breakdown["outdated_datasets"] = round(outdated_penalty, 2)
+        
+        # 5. Semantic Relevance Penalty (Up to 20 points)
+        if len(citation_mentions) > 0:
+            rel_penalty = (1.0 - max(0.0, avg_rel)) * 20.0
+            integrity -= rel_penalty
+            integrity_breakdown["low_relevance"] = round(rel_penalty, 2)
+        else:
+            integrity_breakdown["low_relevance"] = 0.0
+            
+        # 6. Freshness Bonus (Reward papers with highly fresh solid claims, cap at 10)
+        fresh_bonus = min(10.0, sum(1 for c in refined_solid if c.get('freshness_score', 0) >= 80) * 2.0)
+        integrity += fresh_bonus
+        integrity_breakdown["freshness_bonus"] = round(fresh_bonus, 2)
+        
+        # Clamp between 0 and 100
+        integrity = max(0.0, min(100.0, integrity))
+
+    # Use API citation count when we have metadata (more accurate than bib_map count)
+    api_cited_by = paper_metadata.get("cited_by_count", None) if paper_metadata else None
+    api_references_count = len(paper_metadata.get("referenced_works_ids", [])) if paper_metadata else None
 
     return {
+        "analysis_mode": analysis_mode,
         "claims": len(refined_solid),
         "vague_claims": len(refined_vague),
+        # Prefer API citation count over local bib_map count when available
         "citations": len(bib_map) if bib_map else len(citation_mentions),
+        "cited_by_count": api_cited_by,           # Times this paper was cited by others
+        "api_references_count": api_references_count,  # Number of references per API
         "integrity_score": integrity,
         "avg_relevance": avg_rel,
         "self_citation_ratio": self_ratio,
@@ -238,5 +357,8 @@ def run_pipeline(path):
         "false_citations": false_citations,
         "datasets_found": dataset_names,
         "outdated_datasets": outdated_datasets,
-        "market_comparison": dataset_analysis.get("market_comparison")
+        "market_comparison": dataset_analysis.get("market_comparison"),
+        "paper_metadata": paper_metadata,
+        "integrity_breakdown": integrity_breakdown,
+        "total_citations_count": api_references_count if (api_references_count and api_references_count > 0) else len(bib_map) if bib_map else len(citation_mentions)
     }

@@ -47,13 +47,52 @@ def compute_self_citations(target_author_ids, referenced_work_ids):
         "self_cited_works": self_cited_works
     }
 
-def fallback_self_citation_ratio(citations, authors=["author"]):
+def extract_authors_heuristic(body_text):
     """
-    Legacy method for string-matching self-citations when API data is unavailable.
+    Attempts to extract author last names from the first few lines of the paper.
     """
-    count = 0
-    for c in citations:
-        if any(bool(a) and str(a).lower() in str(c).lower() for a in authors):
-            count += 1
-    return count / len(citations) if citations else 0
+    lines = body_text.split('\n')
+    author_last_names = set()
+    
+    # Authors are usually found between lines 1 to 20
+    # Look for capitalized words that might be names, often comma-separated or with symbols
+    import re
+    for line in lines[1:20]:
+        line = line.strip()
+        # Skip common non-author lines
+        if not line or len(line) < 3 or line.lower().startswith('abstract') or '@' in line or 'university' in line.lower() or 'department' in line.lower():
+            continue
+            
+        # Very basic split by commas or 'and'
+        potential_names = re.split(r',|\band\b', line)
+        for name in potential_names:
+            name = name.strip()
+            # Remove academic titles or weird characters
+            name = re.sub(r'[^a-zA-Z\s\-]', '', name)
+            words = name.split()
+            if len(words) >= 2 and len(words) <= 4: # e.g. "Arjun Mehta"
+                # Assume the last word is the last name
+                last_name = words[-1]
+                if len(last_name) > 2 and last_name[0].isupper():
+                    author_last_names.add(last_name)
+                    
+    return list(author_last_names)
 
+def fallback_self_citation_ratio(bib_map, body_text):
+    """
+    Heuristic method for string-matching self-citations when API data is unavailable.
+    """
+    authors = extract_authors_heuristic(body_text)
+    if not authors or not bib_map:
+        return 0.0, 0
+        
+    count = 0
+    total = len(bib_map)
+    for cit_marker, text in bib_map.items():
+        text_lower = str(text).lower()
+        # If any extracted author's last name appears in the citation string
+        if any(a.lower() in text_lower for a in authors):
+            count += 1
+            
+    ratio = count / total if total > 0 else 0.0
+    return ratio, count

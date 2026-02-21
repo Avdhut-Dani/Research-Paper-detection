@@ -1,10 +1,11 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
 import os
 import uuid
+from typing import Optional
 from researcher_system.core.pipeline import run_pipeline
 
 app = FastAPI()
@@ -35,7 +36,7 @@ def read_root():
     return JSONResponse(content={"message": "Welcome to Researcher System API. Go to /static/index.html for UI."})
 
 @app.post("/analyze")
-async def analyze_pdf(file: UploadFile = File(...)):
+async def analyze_pdf(file: UploadFile = File(...), doi: Optional[str] = Form(None)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
 
@@ -48,12 +49,16 @@ async def analyze_pdf(file: UploadFile = File(...)):
     highlighted_path = os.path.join(UPLOAD_DIR, highlighted_filename)
 
     try:
+        # Rewind the file cursor. When FastAPI parses Form data alongside 
+        # a File stream, the cursor may be advanced to the end.
+        file.file.seek(0)
+        
         # Save file
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Run pipeline
-        result = run_pipeline(file_path)
+        # Run pipeline - pass doi if provided, and the original filename for title matching
+        result = run_pipeline(file_path, doi=doi, filename=original_filename)
         
         # Prepare Highlighting Data
         # Solid Claims: Golden Yellow (1.0, 0.8, 0.0)

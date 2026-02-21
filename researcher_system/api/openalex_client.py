@@ -70,6 +70,9 @@ def _parse_openalex_response(data):
         "id": data.get("id"),
         "doi": normalize_doi(data.get("doi")),
         "title": data.get("title"),
+        "publication_year": data.get("publication_year"),
+        "type": data.get("type"),
+        "is_oa": data.get("open_access", {}).get("is_oa", False) if isinstance(data.get("open_access"), dict) else False,
         "cited_by_count": data.get("cited_by_count", 0),
         "referenced_works_ids": referenced_works,  # OpenAlex IDs
         "authors": authors
