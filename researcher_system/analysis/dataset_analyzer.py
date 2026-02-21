@@ -20,9 +20,11 @@ def extract_datasets_from_text(text):
     """
     found_datasets = []
     kb = get_datasets_kb()
+    if not isinstance(kb, dict):
+        return []
     
     # 1. Match Known KB Datasets
-    kb_names = sorted(kb.keys(), key=len, reverse=True)
+    kb_names = sorted(list(kb.keys()), key=len, reverse=True)
     for name in kb_names:
         escaped_name = re.escape(name)
         pattern = rf'\b{escaped_name}\b'
@@ -69,7 +71,10 @@ def analyze_dataset_usage(datasets_found, current_year=None, age_threshold=8):
             continue
             
         ds_year = info.get("year", current_year)
-        age = current_year - ds_year
+        try:
+            age = int(current_year) - int(ds_year)
+        except (ValueError, TypeError):
+            age = 0
         superseded_by = info.get("superseded_by", [])
         
         is_outdated = False
@@ -91,10 +96,10 @@ def analyze_dataset_usage(datasets_found, current_year=None, age_threshold=8):
     # Derive market comparison based on primary domain (if any)
     market_comparison = None
     if identified_domains:
-        primary_domain = max(identified_domains, key=identified_domains.get)
+        primary_domain = max(identified_domains, key=lambda k: identified_domains[k])
         # Get all datasets in KB for this domain
-        domain_datasets = [(k, v) for k, v in kb.items() if v.get("domain") == primary_domain]
-        domain_datasets.sort(key=lambda x: x[1].get("year", 0), reverse=True) # Sort newest first
+        domain_datasets = [(k, v) for k, v in kb.items() if isinstance(v, dict) and v.get("domain") == primary_domain]
+        domain_datasets.sort(key=lambda x: int(x[1].get("year", 0)), reverse=True) # Sort newest first
         
         latest_datasets = [f"{k} ({v.get('year')})" for k, v in domain_datasets[:5]]
         used_in_domain = [ds for ds in datasets_found if kb.get(ds, {}).get("domain") == primary_domain]

@@ -1,4 +1,18 @@
 import re
+import logging
+
+# Global model cache to prevent reloading on every request
+_MODEL_CACHE = {}
+
+def get_bert_model():
+    if 'model' not in _MODEL_CACHE:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _MODEL_CACHE['model'] = SentenceTransformer('all-MiniLM-L6-v2')
+        except Exception as e:
+            logging.error(f"Failed to load SentenceTransformer: {e}")
+            _MODEL_CACHE['model'] = None
+    return _MODEL_CACHE['model']
 
 def analyze_novelty(text):
     """
@@ -15,22 +29,25 @@ def analyze_novelty(text):
     }
     
     # 1. Detect Contribution Statements
-    # Usually found near "Our contributions", "Specifically, we", "In this work, we propose"
     contribution_patterns = [
         r"(?i)our contributions (include|are|summarized as)?",
         r"(?i)the novelty of (our|this) (paper|work|method)",
         r"(?i)specifically, we",
         r"(?i)to the best of our knowledge, (this is )?the first",
-        r"(?i)we provide (the )?first"
+        r"(?i)we provide (the )?first",
+        r"(?i)we propose",
+        r"(?i)we introduce",
+        r"(?i)in this paper, we",
+        r"(?i)main contribution(s)?",
+        r"(?i)fundamental shift",
+        r"(?i)novel method",
     ]
     
-    # Let's extract sentences following these patterns
     sentences = re.split(r'(?<=[.!?])\s+', text)
     for i, sentence in enumerate(sentences):
         for pattern in contribution_patterns:
             if re.search(pattern, sentence):
                 results["has_contribution_statement"] = True
-                # Capture the sentence and maybe the next one if it exists
                 context = sentence.strip()
                 if i + 1 < len(sentences):
                     context += " " + sentences[i+1].strip()
@@ -47,6 +64,7 @@ def analyze_novelty(text):
         r"(?i)groundbreaking",
         r"(?i)pioneering"
     ]
+    
     # 3. Detect Scientific Gap / Problem Motivation
     gap_patterns = [
         r"(?i)however, existing (methods|works|approaches) (fail to|lack|suffer from)",
@@ -54,50 +72,45 @@ def analyze_novelty(text):
         r"(?i)this gap (remains|is)",
         r"(?i)unsolved problem",
         r"(?i)it is (not yet|unclear|difficult to)",
-        r"(?i)to address these (limitations|issues|challenges)"
+        r"(?i)to address these (limitations|issues|challenges)",
+        r"(?i)despite (its|their) success",
+        r"(?i)hard to scale",
+        r"(?i)inefficient"
     ]
-    results["has_scientific_gap"] = False
-    results["gap_mentions"] = []
     for pattern in gap_patterns:
         matches = re.findall(pattern, text)
         if matches:
             results["has_scientific_gap"] = True
-            results["gap_mentions"].extend(list(set(matches)))
+            if isinstance(results["gap_mentions"], list):
+                results["gap_mentions"].extend(list(set(matches)))
             
     # 4. BERT-based Semantic Novelty Check
-    results["is_novelty_specific"] = False
-    if results["contributions"]:
+    model = get_bert_model()
+    if results["contributions"] and model:
         try:
-            from sentence_transformers import SentenceTransformer, util
-            model = SentenceTransformer('all-MiniLM-L6-v2') # lightweight but effective
+            from sentence_transformers import util
             
-            # Combine contributions
             contribution_text = " ".join(results["contributions"])
-            
-            # Extract a generic intro block (first 1000 chars excluding contributions)
             intro_block = text[:2000].replace(contribution_text, "")
             
-            # Embed
             emb1 = model.encode(contribution_text, convert_to_tensor=True)
             emb2 = model.encode(intro_block, convert_to_tensor=True)
             
-            # Check similarity. 
-            # If the contribution is TOO similar (e.g. >0.8) to generic intro text, 
-            # it might just be repeating the problem statement without proposing a specific solution.
             cos_sim = util.pytorch_cos_sim(emb1, emb2).item()
             
-            # Specificity also requires some technical keyword presence
             feature_words = ["algorithm", "framework", "architecture", "benchmark", "dataset", "proof", "optimization", "model"]
             has_specifics = any(word in contribution_text.lower() for word in feature_words)
             
-            # Novelty is specific if it differs from intro AND has technical keywords
             if cos_sim < 0.85 and has_specifics:
                 results["is_novelty_specific"] = True
         except Exception as e:
-            # Fallback for environment issues: use basic heuristics
-            contribution_text = " ".join(results["contributions"])
-            feature_words = ["algorithm", "framework", "architecture", "benchmark", "dataset", "proof", "optimization"]
-            has_specifics = any(word in contribution_text.lower() for word in feature_words)
-            results["is_novelty_specific"] = has_specifics and len(contribution_text.split()) > 20
+            logging.warning(f"Feature specific check failed: {e}")
+
+    # Final fallback if BERT failed or was N/A
+    if not results["is_novelty_specific"] and results["contributions"]:
+        contribution_text = " ".join(results["contributions"])
+        feature_words = ["algorithm", "framework", "architecture", "benchmark", "dataset", "proof", "optimization"]
+        has_specifics = any(word in contribution_text.lower() for word in feature_words)
+        results["is_novelty_specific"] = has_specifics and len(contribution_text.split()) > 20
 
     return results

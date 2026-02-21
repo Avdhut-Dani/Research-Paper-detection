@@ -1,11 +1,12 @@
+import os
+import re
 from researcher_system.nlp.pdf_parser import extract_text
 from researcher_system.nlp.docx_parser import extract_text_from_docx
 from researcher_system.analysis.word_forensics import analyze_word_forensics
 from researcher_system.core.pathway_pipeline import run_pathway_analysis
 from researcher_system.nlp.bib_parser import parse_bibliography
-from researcher_system.nlp.citation_extractor import extract_citations
+from researcher_system.nlp.citation_extractor import extract_citations, extract_citation_contexts
 from researcher_system.analysis.semantic_relevance import relevance
-from researcher_system.models.vague_detector import is_vague
 from researcher_system.models.vague_detector import is_vague
 from researcher_system.analysis.self_citation_analysis import compute_self_citations, fallback_self_citation_ratio
 from researcher_system.analysis.integrity_scoring import score
@@ -15,6 +16,7 @@ from researcher_system.analysis.dataset_analyzer import extract_datasets_from_te
 from researcher_system.analysis.rigor_analyzer import analyze_rigor
 from researcher_system.analysis.novelty_analyzer import analyze_novelty
 from researcher_system.analysis.review_generator import generate_review
+from researcher_system.models.llm_classifier import get_decay_analysis
 
 def extract_title_heuristic(text):
     lines = text.split('\n')
@@ -27,7 +29,6 @@ def extract_title_heuristic(text):
 def fuzzy_match_titles(t1, t2):
     if not t1 or not t2: return False
     # Very basic inclusion match for safety
-    import re
     t1_clean = re.sub(r'[^a-zA-Z0-9]', '', t1.lower())
     t2_clean = re.sub(r'[^a-zA-Z0-9]', '', t2.lower())
     return t1_clean in t2_clean or t2_clean in t1_clean
@@ -61,7 +62,6 @@ def run_pipeline(path=None, doi=None, filename=None):
         
         # User requested: Use the uploaded filename as the intended paper title (stripping extension)
         if filename:
-            import os
             pdf_title = os.path.splitext(filename)[0].replace("_", " ")
         else:
             pdf_title = extract_title_heuristic(body_text)
@@ -139,7 +139,6 @@ def run_pipeline(path=None, doi=None, filename=None):
         verified = True
         verification_note = "No specific citation linked in sentence."
         
-        import re
         mentions = re.findall(r"\[(\d+)\]", sentence)
         if mentions:
             for m in mentions:
@@ -180,13 +179,11 @@ def run_pipeline(path=None, doi=None, filename=None):
     avg_rel = sum(all_rel_scores) / len(all_rel_scores) if all_rel_scores else 0
     # 1. Extract years from bibliography
     bib_years = {}
-    import re
     for ref_id, text in bib_map.items():
         year_match = re.search(r'\b(19|20)\d{2}\b', text)
         if year_match:
             bib_years[ref_id] = int(year_match.group(0))
 
-    from researcher_system.models.llm_classifier import get_decay_analysis
     current_year = 2026
     
     def check_freshness(claim_text):
@@ -265,7 +262,6 @@ def run_pipeline(path=None, doi=None, filename=None):
         
         # 2. False Citation Detection (Only if we have matched PDF text to compare)
         if analysis_mode in ["MATCHED_HYBRID"]:
-            from researcher_system.nlp.citation_extractor import extract_citation_contexts
             citation_contexts = extract_citation_contexts(body_text)
             cited_abstracts_map = fetch_abstracts_for_works(referenced_work_ids)
             
@@ -283,7 +279,6 @@ def run_pipeline(path=None, doi=None, filename=None):
         
         # Heuristic False Citation: Correlate claim immediately against reference string
         if citation_mentions:
-            from researcher_system.nlp.citation_extractor import extract_citation_contexts
             citation_contexts = extract_citation_contexts(body_text)
             # Map citation to raw bibliography text instead of abstract
             false_citations = detect_false_citations(citation_contexts, bib_map)
@@ -357,8 +352,8 @@ def run_pipeline(path=None, doi=None, filename=None):
         system_review = generate_review(analysis_data, integrity_breakdown, body_text)
     else:
         system_review = {
-            "strengths": ["Paper identified via official DOI metadata."],
-            "weaknesses": ["Full text analysis (Claims/Rigor) not possible without PDF body."],
+            "strengths": [{"text": "Paper identified via official DOI metadata.", "source": "Metadata Integrator"}],
+            "weaknesses": [{"text": "Full text analysis (Claims/Rigor) not possible without PDF body.", "source": "Metadata Integrator"}],
             "red_flags": []
         }
 

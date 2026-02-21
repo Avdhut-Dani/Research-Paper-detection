@@ -88,6 +88,9 @@ def fallback_self_citation_ratio(bib_map, body_text):
         
     count = 0
     total = len(bib_map)
+    if not isinstance(bib_map, dict):
+        return 0.0, 0
+        
     for cit_marker, text in bib_map.items():
         text_lower = str(text).lower()
         # If any extracted author's last name appears in the citation string
