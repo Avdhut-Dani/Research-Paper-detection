@@ -37,16 +37,17 @@ def read_root():
 
 @app.post("/analyze")
 async def analyze_pdf(file: UploadFile = File(...), doi: Optional[str] = Form(None)):
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+    ext = file.filename.lower()
+    if not (ext.endswith(".pdf") or ext.endswith(".docx")):
+        raise HTTPException(status_code=400, detail="Only PDF and DOCX files are allowed.")
 
     file_id = str(uuid.uuid4())
     original_filename = file.filename
     file_path = os.path.join(UPLOAD_DIR, f"{file_id}_{original_filename}")
     
-    # Path for the highlighted PDF
-    highlighted_filename = f"highlighted_{file_id}_{original_filename}"
-    highlighted_path = os.path.join(UPLOAD_DIR, highlighted_filename)
+    # Path for the highlighted PDF (if applicable)
+    highlighted_filename = f"highlighted_{file_id}_{original_filename}" if ext.endswith(".pdf") else None
+    highlighted_path = os.path.join(UPLOAD_DIR, highlighted_filename) if highlighted_filename else None
 
     try:
         # Rewind the file cursor. When FastAPI parses Form data alongside 
@@ -77,8 +78,8 @@ async def analyze_pdf(file: UploadFile = File(...), doi: Optional[str] = Form(No
             
         # References are NOT highlighted now per user request
 
-        # Highlight in PDF
-        if highlights:
+        # Highlight in PDF (Only for .pdf files)
+        if highlights and ext.endswith(".pdf"):
              highlight_text_in_pdf(file_path, highlights, highlighted_path)
              result["highlighted_pdf_url"] = f"/uploads/{highlighted_filename}"
         
@@ -93,7 +94,7 @@ async def analyze_pdf(file: UploadFile = File(...), doi: Optional[str] = Form(No
         # Cleanup on error
         if os.path.exists(file_path):
             os.remove(file_path)
-        if os.path.exists(highlighted_path):
+        if highlighted_path and os.path.exists(highlighted_path):
              os.remove(highlighted_path)
         return JSONResponse(status_code=500, content={"error": str(e)})
 

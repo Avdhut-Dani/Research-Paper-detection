@@ -1,4 +1,6 @@
 from researcher_system.nlp.pdf_parser import extract_text
+from researcher_system.nlp.docx_parser import extract_text_from_docx
+from researcher_system.analysis.word_forensics import analyze_word_forensics
 from researcher_system.core.pathway_pipeline import run_pathway_analysis
 from researcher_system.nlp.bib_parser import parse_bibliography
 from researcher_system.nlp.citation_extractor import extract_citations
@@ -10,6 +12,9 @@ from researcher_system.analysis.integrity_scoring import score
 from researcher_system.api.openalex_client import fetch_paper_by_title, fetch_paper_by_doi, fetch_abstracts_for_works
 from researcher_system.analysis.false_citation_detector import detect_false_citations
 from researcher_system.analysis.dataset_analyzer import extract_datasets_from_text, analyze_dataset_usage
+from researcher_system.analysis.rigor_analyzer import analyze_rigor
+from researcher_system.analysis.novelty_analyzer import analyze_novelty
+from researcher_system.analysis.review_generator import generate_review
 
 def extract_title_heuristic(text):
     lines = text.split('\n')
@@ -40,9 +45,15 @@ def run_pipeline(path=None, doi=None, filename=None):
         analysis_mode = "DOI_ONLY"
         paper_metadata = fetch_paper_by_doi(doi)
         
-    # CASE 1 & 2: PDF PROVIDED
+    # CASE 1 & 2: DOCUMENT PROVIDED
     elif path:
-        parsed_content = extract_text(path)
+        if path.lower().endswith('.docx'):
+            parsed_content = extract_text_from_docx(path)
+            word_forensics = analyze_word_forensics(path)
+        else:
+            parsed_content = extract_text(path)
+            word_forensics = None
+            
         body_text = parsed_content["body"]
         ref_text = parsed_content["references"]
         bib_map = parse_bibliography(ref_text if ref_text else body_text)
@@ -96,6 +107,8 @@ def run_pipeline(path=None, doi=None, filename=None):
     dataset_names = []
     outdated_datasets = []
     dataset_analysis = {}
+    system_review = {"strengths": [], "weaknesses": [], "red_flags": []}
+    word_forensics_data = word_forensics if 'word_forensics' in locals() else None
 
     # 3. Run Pathway/LLM analysis on the BODY only (If PDF is available and titles match)
     raw_claims = []
@@ -331,6 +344,23 @@ def run_pipeline(path=None, doi=None, filename=None):
         
         # Clamp between 0 and 100
         integrity = max(0.0, min(100.0, integrity))
+        
+    # --- NEW: Qualitative Review Generation ---
+    if analysis_mode in ["MATCHED_HYBRID", "PDF_ONLY"]:
+        rigor_results = analyze_rigor(body_text)
+        novelty_results = analyze_novelty(body_text)
+        
+        analysis_data = {
+            "rigor": rigor_results,
+            "novelty": novelty_results
+        }
+        system_review = generate_review(analysis_data, integrity_breakdown, body_text)
+    else:
+        system_review = {
+            "strengths": ["Paper identified via official DOI metadata."],
+            "weaknesses": ["Full text analysis (Claims/Rigor) not possible without PDF body."],
+            "red_flags": []
+        }
 
     # Use API citation count when we have metadata (more accurate than bib_map count)
     api_cited_by = paper_metadata.get("cited_by_count", None) if paper_metadata else None
@@ -360,5 +390,7 @@ def run_pipeline(path=None, doi=None, filename=None):
         "market_comparison": dataset_analysis.get("market_comparison"),
         "paper_metadata": paper_metadata,
         "integrity_breakdown": integrity_breakdown,
-        "total_citations_count": api_references_count if (api_references_count and api_references_count > 0) else len(bib_map) if bib_map else len(citation_mentions)
+        "total_citations_count": api_references_count if (api_references_count and api_references_count > 0) else len(bib_map) if bib_map else len(citation_mentions),
+        "system_review": system_review,
+        "word_forensics": word_forensics_data
     }
