@@ -1,0 +1,119 @@
+{
+    "ImageNet": {
+        "year": 2009,
+        "domain": "Computer Vision",
+        "superseded_by": []
+    },
+    "CIFAR-10": {
+        "year": 2009,
+        "domain": "Computer Vision",
+        "superseded_by": []
+    },
+    "MNIST": {
+        "year": 1998,
+        "domain": "Computer Vision",
+        "superseded_by": [
+            "Fashion-MNIST"
+        ]
+    },
+    "FaceForensics": {
+        "year": 2018,
+        "domain": "Deepfake Detection",
+        "superseded_by": [
+            "FaceForensics++",
+            "Celeb-DF",
+            "DFDC"
+        ]
+    },
+    "FaceForensics++": {
+        "year": 2019,
+        "domain": "Deepfake Detection",
+        "superseded_by": [
+            "Celeb-DF",
+            "DFDC",
+            "CelebDFv2"
+        ]
+    },
+    "Celeb-DF": {
+        "year": 2020,
+        "domain": "Deepfake Detection",
+        "superseded_by": [
+            "DFDC"
+        ]
+    },
+    "CelebDFv2": {
+        "year": 2020,
+        "domain": "Deepfake Detection",
+        "superseded_by": [
+            "DFDC"
+        ]
+    },
+    "DFDC": {
+        "year": 2020,
+        "domain": "Deepfake Detection",
+        "superseded_by": []
+    },
+    "TIMIT": {
+        "year": 1993,
+        "domain": "Speech Recognition",
+        "superseded_by": [
+            "LibriSpeech"
+        ]
+    },
+    "SiW": {
+        "year": 2018,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": []
+    },
+    "3DMAD": {
+        "year": 2013,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": [
+            "SiW",
+            "HKBU-MarsV2"
+        ]
+    },
+    "HKBU-MarsV2": {
+        "year": 2016,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": [
+            "SiW"
+        ]
+    },
+    "HKBU": {
+        "year": 2016,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": [
+            "SiW"
+        ]
+    },
+    "MSU-MFSD": {
+        "year": 2015,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": [
+            "SiW"
+        ]
+    },
+    "MSU": {
+        "year": 2015,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": [
+            "SiW"
+        ]
+    },
+    "3DMask": {
+        "year": 2016,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": []
+    },
+    "ROSE-Youtu": {
+        "year": 2018,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": []
+    },
+    "ROSE": {
+        "year": 2018,
+        "domain": "Face Anti-Spoofing",
+        "superseded_by": []
+    }
+}

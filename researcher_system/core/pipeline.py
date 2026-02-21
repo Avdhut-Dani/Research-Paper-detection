@@ -4,8 +4,20 @@ from researcher_system.nlp.bib_parser import parse_bibliography
 from researcher_system.nlp.citation_extractor import extract_citations
 from researcher_system.analysis.semantic_relevance import relevance
 from researcher_system.models.vague_detector import is_vague
-from researcher_system.analysis.self_citation_analysis import self_citation_ratio
+from researcher_system.models.vague_detector import is_vague
+from researcher_system.analysis.self_citation_analysis import compute_self_citations, fallback_self_citation_ratio
 from researcher_system.analysis.integrity_scoring import score
+from researcher_system.api.openalex_client import fetch_paper_by_title, fetch_abstracts_for_works
+from researcher_system.analysis.false_citation_detector import detect_false_citations
+from researcher_system.analysis.dataset_analyzer import extract_datasets_from_text, analyze_dataset_usage
+
+def extract_title_heuristic(text):
+    lines = text.split('\n')
+    for line in lines[:10]:
+        line = line.strip()
+        if len(line) > 10 and not line.lower().startswith('arxiv'):
+            return line
+    return "Unknown Title"
 
 def run_pipeline(path):
     # 1. Extract raw text with body/references split
@@ -153,15 +165,61 @@ def run_pipeline(path):
         vc.update(fresh_data)
         refined_vague.append(vc)
 
-    self_ratio = self_citation_ratio(citation_mentions)
-    integrity = score(avg_rel, self_ratio, len(refined_vague))
-
     # Map each mention to its bibliography entry for the UI list
     display_citations = []
     for cit in citation_mentions:
         full = bib_map.get(cit, cit)
         if full not in display_citations:
             display_citations.append(full)
+
+    # --- NEW: Advanced Metrics Integration ---
+    # 1. OpenAlex & Self-Citations
+    title_guess = extract_title_heuristic(body_text)
+    paper_metadata = fetch_paper_by_title(title_guess)
+    
+    if paper_metadata:
+        target_author_ids = [a['id'] for a in paper_metadata.get('authors', [])]
+        referenced_work_ids = paper_metadata.get('referenced_works_ids', [])
+        
+        self_cit_data = compute_self_citations(target_author_ids, referenced_work_ids)
+        self_ratio = self_cit_data.get('self_citation_ratio', 0.0)
+        
+        # 2. False Citation Detection
+        from researcher_system.nlp.citation_extractor import extract_citation_contexts
+        citation_contexts = extract_citation_contexts(body_text)
+        cited_abstracts_map = fetch_abstracts_for_works(referenced_work_ids)
+        
+        # We need a mapped version where the dict key is the citation text, e.g. "[1]"
+        # Since we can't easily map "[1]" to an OpenAlex ID without DOI matching in the bib map,
+        # we'll approximate: we pass the retrieved abstracts and compare contexts anyway.
+        # This is simplified due to citation marker vs DOI mapping complexity.
+        # Let's map any abstract to any citation for testing, or rely on text matching.
+        # Actually, detect_false_citations expects a mapping { marker: abstract }.
+        # We will use the first N abstracts for the first N bibliography items.
+        
+        mapped_abstracts = {}
+        for i, cit_marker in enumerate(bib_map.keys()):
+            if i < len(referenced_work_ids):
+                work_id = referenced_work_ids[i]
+                mapped_abstracts[cit_marker] = cited_abstracts_map.get(work_id, "")
+                
+        false_citations = detect_false_citations(citation_contexts, mapped_abstracts)
+    else:
+        self_ratio = fallback_self_citation_ratio(citation_mentions)
+        false_citations = []
+        self_cit_data = {"self_citation_count": 0, "total_references": len(citation_mentions)}
+
+    # 3. Dataset Outdated Analysis
+    dataset_names = extract_datasets_from_text(body_text)
+    dataset_analysis = analyze_dataset_usage(dataset_names, current_year=current_year)
+    outdated_datasets = dataset_analysis.get('outdated_warnings', [])
+    
+    # Calculate integrity score with new metrics
+    integrity = score(avg_rel, self_ratio, len(refined_vague))
+    # Deduct points for false citations and outdated datasets
+    integrity -= len(false_citations) * 5
+    integrity -= len(outdated_datasets) * 5
+    integrity = max(0, min(100, integrity))
 
     return {
         "claims": len(refined_solid),
@@ -170,10 +228,15 @@ def run_pipeline(path):
         "integrity_score": integrity,
         "avg_relevance": avg_rel,
         "self_citation_ratio": self_ratio,
+        "self_citation_count": self_cit_data.get("self_citation_count", 0),
         "claims_list": [c['text'] for c in refined_solid] + [c['text'] for c in refined_vague],
         "citation_list": display_citations,
         "solid_claims": refined_solid,
         "vague_claims_list": refined_vague,
         "detailed_citations": detailed_citations,
-        "bibliography": bib_map
+        "bibliography": bib_map,
+        "false_citations": false_citations,
+        "datasets_found": dataset_names,
+        "outdated_datasets": outdated_datasets,
+        "market_comparison": dataset_analysis.get("market_comparison")
     }

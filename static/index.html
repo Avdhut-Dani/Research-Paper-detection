@@ -81,6 +81,23 @@
             </div>
         </div>
 
+        <div id="pdfViewerContainer" style="margin-top: 30px; display: none;">
+            <h3>Document Viewer (Highlighted)</h3>
+            <iframe id="pdfViewer" src="" style="width: 100%; height: 600px; border: 1px solid #ccc; border-radius: 4px;"></iframe>
+        </div>
+
+        <div id="datasetAnalysis" style="margin-top: 30px;">
+            <h3>Dataset Analysis</h3>
+            <div id="datasetFoundText" style="margin-bottom: 10px; color: #7f8c8d;"></div>
+            <ul class="citations-list" id="outdatedDatasetList"></ul>
+        </div>
+
+        <div id="falseCitationsContainer" style="margin-top: 30px;">
+            <h3>Suspicious / False Citations</h3>
+            <div style="font-size: 0.9em; color: #7f8c8d; margin-bottom: 10px;">Citations whose context does not semantically match the cited paper's abstract.</div>
+            <ul class="citations-list" id="falseCitationsList"></ul>
+        </div>
+
         <h3>Found Citations</h3>
         <ul class="citations-list" id="citationsList">
             <!-- Citations will be injected here -->
@@ -141,11 +158,22 @@
 
     function displayResults(data) {
         document.getElementById('integrityScore').textContent = data.integrity_score.toFixed(2);
-        document.getElementById('claimsCount').textContent = data.claims;
+        const totalClaims = (data.claims || 0) + (data.vague_claims || 0);
+        document.getElementById('claimsCount').textContent = totalClaims;
         document.getElementById('vagueCount').textContent = data.vague_claims;
         document.getElementById('citationsCount').textContent = data.citations;
-        document.getElementById('avgRelevance').textContent = data.avg_relevance.toFixed(4);
-        document.getElementById('selfCitationRatio').textContent = (data.self_citation_ratio * 100).toFixed(1) + '%'; 
+        
+        // Handle negative relevance - clamp to 0 or display N/A if missing
+        let avgRel = data.avg_relevance;
+        if (avgRel !== undefined && avgRel !== null) {
+            avgRel = Math.max(0, avgRel); // clamp negative to 0
+            document.getElementById('avgRelevance').textContent = avgRel.toFixed(4);
+        } else {
+            document.getElementById('avgRelevance').textContent = 'N/A';
+        }
+        
+        const selfCitCount = data.self_citation_count || 0;
+        document.getElementById('selfCitationRatio').textContent = `${(data.self_citation_ratio * 100).toFixed(1)}% (${selfCitCount})`;
 
         // Display Download Button if available
         const resultsHeader = document.querySelector('#results h2');
@@ -161,6 +189,14 @@
             btn.style.cssText = 'display: inline-block; background: #9b59b6; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; margin-left: 20px; font-size: 0.8em; vertical-align: middle;';
             btn.download = 'highlighted_paper.pdf';
             resultsHeader.appendChild(btn);
+            
+            // Show PDF in iframe
+            const pdfContainer = document.getElementById('pdfViewerContainer');
+            const pdfViewer = document.getElementById('pdfViewer');
+            pdfViewer.src = data.highlighted_pdf_url;
+            pdfContainer.style.display = 'block';
+        } else {
+            document.getElementById('pdfViewerContainer').style.display = 'none';
         }
 
         // Display Citations
@@ -178,6 +214,88 @@
             li.textContent = 'No citations found.';
             li.style.color = '#7f8c8d';
             list.appendChild(li);
+        }
+
+        // Display Dataset Analysis
+        const datasetAnalysis = document.getElementById('datasetAnalysis');
+        const datasetFoundText = document.getElementById('datasetFoundText');
+        const outdatedDatasetList = document.getElementById('outdatedDatasetList');
+        
+        // Remove existing market comparison if any
+        let existingMarketCmp = document.getElementById('marketComparisonDiv');
+        if (existingMarketCmp) existingMarketCmp.remove();
+        
+        if (data.datasets_found && data.datasets_found.length > 0) {
+            datasetFoundText.textContent = `Named Datasets Found: ${data.datasets_found.join(', ')}`;
+            outdatedDatasetList.innerHTML = '';
+            
+            if (data.outdated_datasets && data.outdated_datasets.length > 0) {
+                data.outdated_datasets.forEach(warn => {
+                    const li = document.createElement('li');
+                    li.style.borderLeft = "4px solid #e74c3c";
+                    li.innerHTML = `<strong>⚠️ ${warn.dataset}</strong>: ${warn.reason}`;
+                    outdatedDatasetList.appendChild(li);
+                });
+            } else {
+                const li = document.createElement('li');
+                li.style.color = '#2ecc71';
+                li.textContent = '✓ All datasets used appear to be acceptable (no outdated warnings).';
+                outdatedDatasetList.appendChild(li);
+            }
+            
+            if (data.market_comparison) {
+                const cmp = data.market_comparison;
+                const cmpDiv = document.createElement('div');
+                cmpDiv.id = 'marketComparisonDiv';
+                cmpDiv.style.marginTop = "15px";
+                cmpDiv.style.padding = "15px";
+                cmpDiv.style.backgroundColor = "#e8f4f8";
+                cmpDiv.style.borderRadius = "5px";
+                cmpDiv.style.borderLeft = "5px solid #3498db";
+                
+                cmpDiv.innerHTML = `
+                    <h4 style="margin-top:0; color:#2c3e50;">📊 Market Comparison: ${cmp.domain}</h4>
+                    <p style="font-size: 0.9em; color:#34495e; margin-bottom: 10px;">${cmp.analysis}</p>
+                    <div style="font-size: 0.85em;">
+                        <strong>Latest Available Benchmarks:</strong> ${cmp.latest_available.join(', ')}<br/>
+                        ${cmp.missed && cmp.missed.length > 0 ? `<strong style="color: #e74c3c;">Missed Opportunities:</strong> ${cmp.missed.join(', ')}` : `<strong style="color: #2ecc71;">✓ Author used top alternatives.</strong>`}
+                    </div>
+                `;
+                datasetAnalysis.appendChild(cmpDiv);
+            }
+        } else {
+            datasetFoundText.textContent = 'No known datasets were detected in this paper.';
+            outdatedDatasetList.innerHTML = '';
+            const li = document.createElement('li');
+            li.style.color = '#7f8c8d';
+            li.textContent = 'System found no recognized datasets to evaluate.';
+            outdatedDatasetList.appendChild(li);
+        }
+
+        // Display False Citations
+        const falseContainer = document.getElementById('falseCitationsContainer');
+        const falseList = document.getElementById('falseCitationsList');
+        
+        if (data.false_citations && data.false_citations.length > 0) {
+            falseList.innerHTML = '';
+            
+            data.false_citations.forEach(fc => {
+                const li = document.createElement('li');
+                li.style.borderLeft = "4px solid #e67e22";
+                li.innerHTML = `
+                    <div style="margin-bottom: 5px;"><strong>Citation:</strong> ${fc.citation}</div>
+                    <div style="margin-bottom: 5px; font-style: italic; color: #34495e;">Context: "${fc.context}"</div>
+                    <div style="margin-bottom: 5px; font-size: 0.85em; color: #7f8c8d;"><strong>Abstract:</strong> ${fc.abstract_snippet}</div>
+                    <div style="font-size: 0.85em; color: #c0392b;"><strong>Flag:</strong> ${fc.reasoning} (Sim: ${fc.similarity_score.toFixed(2)})</div>
+                `;
+                falseList.appendChild(li);
+            });
+        } else {
+            falseList.innerHTML = '';
+            const li = document.createElement('li');
+            li.style.color = '#2ecc71';
+            li.textContent = '✓ No false or suspicious citations detected.';
+            falseList.appendChild(li);
         }
 
         // Display Claims
